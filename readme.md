@@ -39,3 +39,5 @@ https://github.com/ysf/gef-bata
 ## Một số file quan trọng
 
 `vmlinuz/bzImage`
+
+# ret2usr

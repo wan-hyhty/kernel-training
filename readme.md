@@ -111,6 +111,20 @@ void escalate_privs(void)
 - nó được bật bằng cách set bit thứ 21 của thanh ghi CR4.
   ![Alt text](bin/image-1.png)
 
+### KASLR
+
+- Chức năng khá tương tự với ASLR ở userland, tuy nhiên KASLR như một bản nâng cấp mạnh mẽ. KASLR không chỉ random base address mà còn ngẫu nhiên thứ tự các hàm của module. Các phiên bản kernel mới đã thêm `FG-KASLR`. Tuy nhiên sẽ tồn tại những đoạn địa chỉ không chịu ảnh hưởng của `FG-KASLR` đó chính là `ksymtab`. Ta có cấu trúc `kernel_symbol` như sau:
+
+```c
+struct kernel_symbol {
+	int value_offset;
+	int name_offset;
+	int namespace_offset;
+};
+```
+
+- Như vậy, mục tiêu của chúng ta sẽ là leak `value_offset` từ đó tính toán được địa chỉ hàm bằng cách `ksymtab+value_offset`.
+
 ### bypass
 
 #### overwrite CR4

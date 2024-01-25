@@ -226,3 +226,10 @@ print(len(b))
 ```
 
 `0xffffffff81400dc6 is because the base address shown by ROPgadget is 0xffffffff81000000, and the previous script tells us that the text segment with offsets lower than 0x400dc6 is not affected by FGKASLR`
+
+#### workflow của kaslr
+
+```
+leak commit_creds() và prepare_kernel_cred() -> commit_creds(prepare_kernel_cred(0))
+                                             -> tmp = prepare_kernel_cred(0) -> commit_creds(tmp)
+```

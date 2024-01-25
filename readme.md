@@ -111,20 +111,6 @@ void escalate_privs(void)
 - nó được bật bằng cách set bit thứ 21 của thanh ghi CR4.
   ![Alt text](bin/image-1.png)
 
-### KASLR
-
-- Chức năng khá tương tự với ASLR ở userland, tuy nhiên KASLR như một bản nâng cấp mạnh mẽ. KASLR không chỉ random base address mà còn ngẫu nhiên thứ tự các hàm của module. Các phiên bản kernel mới đã thêm `FG-KASLR`. Tuy nhiên sẽ tồn tại những đoạn địa chỉ không chịu ảnh hưởng của `FG-KASLR` đó chính là `ksymtab`. Ta có cấu trúc `kernel_symbol` như sau:
-
-```c
-struct kernel_symbol {
-	int value_offset;
-	int name_offset;
-	int namespace_offset;
-};
-```
-
-- Như vậy, mục tiêu của chúng ta sẽ là leak `value_offset` từ đó tính toán được địa chỉ hàm bằng cách `ksymtab+value_offset`.
-
 ### bypass
 
 #### overwrite CR4
@@ -197,3 +183,46 @@ void build_fake_stack(void){
     ... // the rest of the chain is the same as the last payload
 }
 ```
+
+### KASLR
+
+- Chức năng khá tương tự với ASLR ở userland, tuy nhiên KASLR như một bản nâng cấp mạnh mẽ. KASLR không chỉ random base address mà còn ngẫu nhiên thứ tự các hàm của module. Các phiên bản kernel mới đã thêm `FG-KASLR`. Tuy nhiên sẽ tồn tại những đoạn địa chỉ không chịu ảnh hưởng của `FG-KASLR` đó chính là `ksymtab`. Ta có cấu trúc `kernel_symbol` như sau:
+
+```c
+struct kernel_symbol {
+	int value_offset;
+	int name_offset;
+	int namespace_offset;
+};
+```
+
+- Như vậy, mục tiêu của chúng ta sẽ là leak `value_offset` từ đó tính toán được địa chỉ hàm bằng cách `ksymtab+value_offset`.
+
+#### bypass
+
+- Có một số cách để kiểm tra xem vùng địa chỉ nào không bị ảnh hưởng bởi KASLR
+  ![Alt text](bin/image-2.png)
+- Kiểm tra `/proc/kallsyms` [check-fgkaslr](https://github.com/Y3A/check-fgkaslr)
+
+##### find_gadget.py
+
+```py
+#!/usr/bin/python3
+
+f = open('gadgets.txt', 'r')
+a = f.readlines()[2:]
+b = []
+
+
+for i in a[:-2]:
+    if int(i.split()[0], 16) < 0xffffffff81400dc6:
+        if ('mov' in i or 'pop' in i) and 'jmp' not in i:
+            b.append(i)
+
+for j in b:
+    print(j)
+
+print(len(b))
+```
+
+`0xffffffff81400dc6 is because the base address shown by ROPgadget is 0xffffffff81000000, and the previous script tells us that the text segment with offsets lower than 0x400dc6 is not affected by FGKASLR`

